@@ -56,16 +56,46 @@ def start_deploy(bot_id: int, bot_name: str, filename: str, telegram_token: str)
     return job
 
 
-def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: str):
-    from app.docker_manager import DockerManager, client, DOCKERFILE_TEMPLATE
-    from app.config import UPLOAD_DIR
-    from docker.errors import NotFound
-
-    bot_dir = UPLOAD_DIR / bot_name
-    image_name = DockerManager._bot_image_name(bot_name)
-    container_name = DockerManager._bot_container_name(bot_name)
-
+def _update_bot_in_db(bot_id: int, status: str, container_id: str = None):
+    """Update bot record in DB from the background thread using a sync connection."""
     try:
+        from sqlalchemy import create_engine, text
+        from app.config import DATABASE_URL
+
+        # Convert async URL to sync for this thread
+        sync_url = DATABASE_URL.replace("sqlite+aiosqlite", "sqlite")
+        engine = create_engine(sync_url)
+        with engine.connect() as conn:
+            if container_id is not None:
+                conn.execute(
+                    text("UPDATE bots SET status = :status, container_id = :cid WHERE id = :id"),
+                    {"status": status, "cid": container_id, "id": bot_id},
+                )
+            else:
+                conn.execute(
+                    text("UPDATE bots SET status = :status WHERE id = :id"),
+                    {"status": status, "id": bot_id},
+                )
+            conn.commit()
+        engine.dispose()
+    except Exception as e:
+        # Log but don't crash the deploy thread
+        print(f"[deploy_worker] DB update failed for bot {bot_id}: {e}")
+
+
+def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: str):
+    try:
+        import docker
+        from docker.errors import NotFound
+        from app.docker_manager import DockerManager, DOCKERFILE_TEMPLATE
+        from app.config import UPLOAD_DIR
+
+        client = docker.from_env(timeout=60)
+
+        bot_dir = UPLOAD_DIR / bot_name
+        image_name = DockerManager._bot_image_name(bot_name)
+        container_name = DockerManager._bot_container_name(bot_name)
+
         # Phase 1: Prepare Dockerfile
         job.phase = DeployPhase.PREPARING
         job.progress = 5
@@ -116,6 +146,9 @@ def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: st
                     job.append_log(f"[build] {line}")
             if "error" in chunk:
                 raise RuntimeError(chunk["error"].strip())
+            if "errorDetail" in chunk:
+                detail = chunk["errorDetail"].get("message", "Unknown build error")
+                raise RuntimeError(detail)
 
             # Estimate progress during build (20-80)
             if job.progress < 80:
@@ -153,7 +186,13 @@ def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: st
         job.progress = 100
         job.append_log("[done] Deploy completed successfully")
 
+        # Persist result to DB
+        _update_bot_in_db(job.bot_id, "running", container.id)
+
     except Exception as e:
         job.phase = DeployPhase.FAILED
         job.error = str(e)
         job.append_log(f"[error] Deploy failed: {e}")
+
+        # Persist failure to DB
+        _update_bot_in_db(job.bot_id, "error")

@@ -158,6 +158,8 @@ async def bot_detail(request: Request, bot_id: int, db: AsyncSession = Depends(g
 
     # Sync deploy job result to DB
     job = get_job(bot_id)
+    deploying = False
+
     if job and job.phase == DeployPhase.DONE and job.container_id:
         bot.container_id = job.container_id
         bot.status = "running"
@@ -165,8 +167,12 @@ async def bot_detail(request: Request, bot_id: int, db: AsyncSession = Depends(g
     elif job and job.phase == DeployPhase.FAILED:
         bot.status = "error"
         await db.commit()
-
-    deploying = job and job.phase not in (DeployPhase.DONE, DeployPhase.FAILED)
+    elif job and job.phase not in (DeployPhase.DONE, DeployPhase.FAILED):
+        deploying = True
+    elif bot.status == "deploying" and not job:
+        # Stale state: server restarted or thread died, no active job
+        bot.status = "error"
+        await db.commit()
 
     # Sync status from Docker
     logs = ""
@@ -299,6 +305,10 @@ async def bot_status_partial(request: Request, bot_id: int, db: AsyncSession = D
         await db.commit()
     elif job and job.phase not in (DeployPhase.DONE, DeployPhase.FAILED):
         bot.status = "deploying"
+    elif bot.status == "deploying" and not job:
+        # Stale: no active job but DB says deploying
+        bot.status = "error"
+        await db.commit()
     elif bot.container_id:
         docker_status = DockerManager.get_status(bot.container_id)
         if docker_status == "running":
