@@ -20,3 +20,14 @@ app.include_router(dashboard.router)
 app.include_router(bots.router)
 app.include_router(logs.router)
 app.include_router(generator.router)
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["uploads/*", "*.db"],
+    )
