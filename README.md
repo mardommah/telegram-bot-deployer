@@ -234,26 +234,90 @@ Caddy automatically handles SSL via Let's Encrypt.
 
 ---
 
-### Option 3: Dokploy / Platform Deployment
+### Option 3: Dokploy Deployment
 
-If deploying via Dokploy, Coolify, or similar Docker-based platforms:
+Step-by-step guide for deploying via [Dokploy](https://dokploy.com/).
 
-1. **Add volume mount** in the service configuration:
-   ```
-   /var/run/docker.sock:/var/run/docker.sock
-   ```
-2. **Set environment variables** (or use `.env` file):
-   ```
-   DOCKER_HOST=unix:///var/run/docker.sock
-   DATABASE_URL=sqlite+aiosqlite:////app/data/deployer.db
-   UPLOAD_DIR=/app/uploads
-   ADMIN_USERNAME=admin
-   ADMIN_PASSWORD=<strong-password>
-   SECRET_KEY=<random-string>
-   FERNET_KEY=<generate-with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
-   ```
-3. **Add persistent volumes** for `/app/uploads` and `/app/data`
-4. The app will show "Docker connected" in logs on startup if the socket is mounted correctly
+#### 1. Create Service
+
+- Go to Dokploy dashboard → **Projects** → Create a new project
+- Add a new **Application** service
+- Choose **Docker** as the build type
+- Connect your Git repository or upload the source code
+
+#### 2. Configure Volumes (REQUIRED)
+
+Go to **Advanced → Volumes/Mounts** and add a **bind mount**:
+
+| Field | Value |
+|-------|-------|
+| Source (Host Path) | `/var/run/docker.sock` |
+| Target (Container Path) | `/var/run/docker.sock` |
+| Type | `bind` |
+
+Also add persistent storage volumes:
+
+| Source | Target | Type |
+|--------|--------|------|
+| `tgbot-uploads` | `/app/uploads` | `volume` |
+| `tgbot-data` | `/app/data` | `volume` |
+
+> **Without the Docker socket mount, bot deployment will fail.** The app will show `WARNING: Docker not available` in logs.
+
+#### 3. Set Environment Variables
+
+Go to **Environment** and add:
+
+```env
+DOCKER_HOST=unix:///var/run/docker.sock
+DATABASE_URL=sqlite+aiosqlite:////app/data/deployer.db
+UPLOAD_DIR=/app/uploads
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<use-a-strong-password>
+SECRET_KEY=<random-64-char-string>
+FERNET_KEY=<run: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+```
+
+#### 4. Configure Port
+
+Go to **Ports** and map:
+
+| Container Port | Host Port | Protocol |
+|----------------|-----------|----------|
+| `8000` | `8000` | `TCP` |
+
+Or configure a domain under **Domains** if you want Dokploy to handle reverse proxy + SSL.
+
+#### 5. Deploy
+
+Click **Deploy**. After deployment, check the logs. You should see:
+
+```
+[startup] Docker connected: Docker 24.x.x — Ubuntu 22.04
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000
+```
+
+If you see `WARNING: Docker not available`, go back to step 2 and verify the Docker socket volume mount.
+
+#### 6. (Optional) Domain + SSL
+
+In Dokploy, go to **Domains**:
+- Add your domain (e.g., `bot.example.com`)
+- Enable HTTPS (Dokploy handles Let's Encrypt automatically)
+- Dokploy will configure Traefik as reverse proxy with SSE support built-in
+
+---
+
+### Troubleshooting Docker-in-Docker
+
+| Problem | Solution |
+|---------|----------|
+| `WARNING: Docker not available` at startup | Docker socket not mounted. Add `/var/run/docker.sock:/var/run/docker.sock` as a bind mount volume |
+| `permission denied` when accessing Docker socket | Make sure the container runs as root (`user: root` in compose) or add the container user to the `docker` group on the host |
+| Bot containers not visible in `docker ps` on host | This is expected — bot containers run on the **host** Docker daemon, not inside the deployer container. Use `docker ps` on the VPS host to see them |
+| Deploy stuck at "building" | Check VPS disk space (`df -h`) and Docker disk usage (`docker system df`). Also check if the base image `python:3.11-slim` can be pulled |
+| Database lost after redeploy | Make sure `/app/data` is mounted as a persistent volume, not an ephemeral container path |
 
 ---
 
