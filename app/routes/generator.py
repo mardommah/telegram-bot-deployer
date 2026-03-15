@@ -9,6 +9,38 @@ from app.models import Bot
 from app.config import fernet, UPLOAD_DIR
 from app.bot_templates import TEMPLATES, get_template
 
+STARTER_CODE = '''\
+import os
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+
+
+async def start(update: Update, context):
+    await update.message.reply_text("Hello! Bot is running.")
+
+
+async def handle_message(update: Update, context):
+    await update.message.reply_text(f"You said: {update.message.text}")
+
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Bot started")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
 router = APIRouter(prefix="/generator")
 templates = Jinja2Templates(directory="app/templates")
 
@@ -116,7 +148,79 @@ async def generate_bot(
         status="created",
     )
     db.add(bot)
+    await db.flush()
     await db.commit()
-    await db.refresh(bot)
+
+    return RedirectResponse(f"/bots/{bot.id}", status_code=303)
+
+
+@router.get("/manual/editor", response_class=HTMLResponse)
+async def manual_editor(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    return templates.TemplateResponse(
+        "generator_manual.html",
+        {"request": request, "user": user, "error": None, "starter_code": STARTER_CODE},
+    )
+
+
+@router.post("/manual/editor")
+async def manual_create(request: Request, db: AsyncSession = Depends(get_db)):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    form = await request.form()
+    bot_name = form.get("bot_name", "").strip()
+    telegram_token = form.get("telegram_token", "").strip()
+    bot_code = form.get("bot_code", "").strip()
+    requirements = form.get("requirements", "").strip()
+
+    if not bot_name or not telegram_token or not bot_code:
+        return templates.TemplateResponse(
+            "generator_manual.html",
+            {
+                "request": request,
+                "user": user,
+                "error": "Bot name, token, and code are required",
+                "starter_code": bot_code or STARTER_CODE,
+            },
+        )
+
+    # Check unique name
+    existing = await db.execute(select(Bot).where(Bot.name == bot_name))
+    if existing.scalar_one_or_none():
+        return templates.TemplateResponse(
+            "generator_manual.html",
+            {
+                "request": request,
+                "user": user,
+                "error": f"Bot '{bot_name}' already exists",
+                "starter_code": bot_code,
+            },
+        )
+
+    # Write files
+    bot_dir = UPLOAD_DIR / bot_name
+    bot_dir.mkdir(parents=True, exist_ok=True)
+
+    (bot_dir / "bot.py").write_text(bot_code)
+
+    if requirements:
+        (bot_dir / "requirements.txt").write_text(requirements + "\n")
+
+    # Save to DB
+    encrypted_token = fernet.encrypt(telegram_token.encode()).decode()
+    bot = Bot(
+        name=bot_name,
+        telegram_token=encrypted_token,
+        filename="bot.py",
+        status="created",
+    )
+    db.add(bot)
+    await db.flush()
+    await db.commit()
 
     return RedirectResponse(f"/bots/{bot.id}", status_code=303)

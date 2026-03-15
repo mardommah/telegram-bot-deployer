@@ -5,6 +5,38 @@
     <a href="/" class="text-gray-400 hover:text-white text-sm">&larr; Back to Dashboard</a>
 </div>
 
+<!-- Flash messages -->
+{% if msg == 'token_updated' %}
+<div class="bg-green-900/50 border border-green-700 text-green-300 px-4 py-2 rounded mb-4">
+    Token updated successfully. Redeploy the bot to apply changes.
+</div>
+{% elif msg == 'env_updated' %}
+<div class="bg-green-900/50 border border-green-700 text-green-300 px-4 py-2 rounded mb-4">
+    Environment variables updated. Redeploy the bot to apply changes.
+</div>
+{% elif msg == 'invalid_env' %}
+<div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded mb-4">
+    Invalid env format. Use KEY=VALUE, one per line.
+</div>
+{% elif msg == 'code_updated' %}
+<div class="bg-green-900/50 border border-green-700 text-green-300 px-4 py-2 rounded mb-4">
+    Bot code updated (entrypoint: {{ bot.filename }}). Redeploy the bot to apply changes.
+</div>
+{% elif msg == 'unsafe_zip' %}
+<div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded mb-4">
+    Zip file contains unsafe paths.
+</div>
+{% elif msg == 'bad_zip' %}
+<div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded mb-4">
+    Invalid zip file.
+</div>
+{% elif msg == 'no_entrypoint' %}
+<div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded mb-4">
+    Could not detect entrypoint. Specify it manually.
+</div>
+{% endif %}
+
+<!-- Bot Info + Controls -->
 <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
     <div class="flex items-center justify-between mb-4">
         <h1 class="text-2xl font-bold">{{ bot.name }}</h1>
@@ -67,6 +99,9 @@
                 Start
             </button>
         </form>
+        {% endif %}
+
+        {% if bot.status in ('running', 'stopped', 'error') %}
         <form method="post" action="/bots/{{ bot.id }}/deploy">
             <button class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded text-sm font-medium transition">
                 Redeploy
@@ -92,7 +127,6 @@
                 <h2 class="font-semibold">Deploy Progress</h2>
                 <span id="deploy-phase" class="text-xs text-blue-400 font-mono uppercase">preparing</span>
             </div>
-            <!-- Progress bar -->
             <div class="w-full bg-gray-700 rounded-full h-2">
                 <div id="deploy-progress-bar" class="h-2 rounded-full transition-all duration-300 bg-blue-500" style="width: 0%"></div>
             </div>
@@ -104,6 +138,105 @@
         <div id="deploy-output" class="p-4 font-mono text-xs text-cyan-400 bg-gray-950 rounded-b-lg max-h-[400px] overflow-y-auto whitespace-pre-wrap"></div>
     </div>
 </div>
+
+<!-- Settings: Tabs -->
+{% if bot.status != 'deploying' %}
+<div class="bg-gray-800 rounded-lg border border-gray-700 mb-6">
+    <div class="border-b border-gray-700">
+        <div class="flex">
+            <button onclick="showTab('credentials')" id="tab-credentials"
+                class="px-4 py-3 text-sm font-medium border-b-2 border-blue-500 text-blue-400">
+                Credentials
+            </button>
+            <button onclick="showTab('envvars')" id="tab-envvars"
+                class="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
+                Environment Variables
+            </button>
+            <button onclick="showTab('update')" id="tab-update"
+                class="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-400 hover:text-white">
+                Update Code
+            </button>
+        </div>
+    </div>
+
+    <!-- Tab: Credentials -->
+    <div id="panel-credentials" class="p-5">
+        <form method="post" action="/bots/{{ bot.id }}/update-token" class="space-y-4">
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Telegram Bot Token</label>
+                <input type="password" name="telegram_token" required placeholder="Enter new token..."
+                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500">
+                <p class="text-xs text-gray-500 mt-1">Current token is encrypted. Enter a new token to replace it.</p>
+            </div>
+            {% if bot.container_id %}
+            <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+                <input type="checkbox" name="auto_redeploy" value="on" checked
+                    class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500">
+                Auto-redeploy bot after update
+            </label>
+            {% endif %}
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Update Token
+            </button>
+        </form>
+    </div>
+
+    <!-- Tab: Environment Variables -->
+    <div id="panel-envvars" class="p-5 hidden">
+        <form method="post" action="/bots/{{ bot.id }}/update-env" class="space-y-4">
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Custom Environment Variables</label>
+                <textarea name="env_vars" rows="6" placeholder="DB_HOST=localhost&#10;DB_PORT=5432&#10;API_KEY=your-api-key"
+                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500 font-mono text-sm">{{ env_vars_text }}</textarea>
+                <p class="text-xs text-gray-500 mt-1">
+                    One per line: <code class="text-gray-400">KEY=VALUE</code>.
+                    <code class="text-gray-400">TELEGRAM_BOT_TOKEN</code> is injected automatically.
+                    Values are stored encrypted.
+                </p>
+            </div>
+            {% if bot.container_id %}
+            <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+                <input type="checkbox" name="auto_redeploy" value="on" checked
+                    class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500">
+                Auto-redeploy bot after update
+            </label>
+            {% endif %}
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Save Environment Variables
+            </button>
+        </form>
+    </div>
+
+    <!-- Tab: Update Code -->
+    <div id="panel-update" class="p-5 hidden">
+        <form method="post" action="/bots/{{ bot.id }}/update-code" enctype="multipart/form-data" class="space-y-4">
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Upload New Bot File (.py or .zip)</label>
+                <input type="file" name="bot_file" accept=".py,.zip" required id="update-file-input"
+                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:bg-blue-600 file:text-white file:cursor-pointer">
+                <p class="text-xs text-gray-500 mt-1">This will replace all existing bot files. Current entrypoint: <code class="text-gray-400">{{ bot.filename }}</code></p>
+            </div>
+            <div id="update-entrypoint-field" class="hidden">
+                <label class="block text-sm text-gray-400 mb-1">Entrypoint (optional)</label>
+                <input type="text" name="entrypoint" placeholder="main.py or src/bot.py"
+                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white focus:outline-none focus:border-blue-500">
+                <p class="text-xs text-gray-500 mt-1">Auto-detected from main.py, bot.py, app.py, run.py</p>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Requirements File (optional)</label>
+                <input type="file" name="requirements_file" accept=".txt"
+                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:cursor-pointer">
+            </div>
+            <div class="flex items-center gap-4">
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                    Upload & Update
+                </button>
+                <p class="text-xs text-gray-500">After updating, click <strong>Redeploy</strong> to apply changes.</p>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
 
 <!-- Logs -->
 <div class="bg-gray-800 rounded-lg border border-gray-700">
@@ -120,6 +253,40 @@
 </div>
 
 <script>
+// Tab switching
+function showTab(name) {
+    ['credentials', 'envvars', 'update'].forEach(function(t) {
+        document.getElementById('panel-' + t).classList.add('hidden');
+        document.getElementById('tab-' + t).classList.remove('border-blue-500', 'text-blue-400');
+        document.getElementById('tab-' + t).classList.add('border-transparent', 'text-gray-400');
+    });
+    document.getElementById('panel-' + name).classList.remove('hidden');
+    document.getElementById('tab-' + name).classList.add('border-blue-500', 'text-blue-400');
+    document.getElementById('tab-' + name).classList.remove('border-transparent', 'text-gray-400');
+}
+
+// Auto-open relevant tab based on flash message
+{% if msg in ('token_updated',) %}
+showTab('credentials');
+{% elif msg in ('env_updated', 'invalid_env') %}
+showTab('envvars');
+{% elif msg in ('code_updated', 'unsafe_zip', 'bad_zip', 'no_entrypoint') %}
+showTab('update');
+{% endif %}
+
+// Show entrypoint field when zip selected in update form
+const updateInput = document.getElementById('update-file-input');
+if (updateInput) {
+    updateInput.addEventListener('change', function() {
+        const ep = document.getElementById('update-entrypoint-field');
+        if (this.files[0] && this.files[0].name.toLowerCase().endsWith('.zip')) {
+            ep.classList.remove('hidden');
+        } else {
+            ep.classList.add('hidden');
+        }
+    });
+}
+
 // Deploy progress streaming
 {% if deploying %}
 (function() {
@@ -127,15 +294,12 @@
     const progressBar = document.getElementById('deploy-progress-bar');
     const progressText = document.getElementById('deploy-progress-text');
     const phaseLabel = document.getElementById('deploy-phase');
-    const section = document.getElementById('deploy-section');
 
     const evtSource = new EventSource('/bots/{{ bot.id }}/deploy/stream');
 
     evtSource.addEventListener('log', function(e) {
         const line = e.data;
         const span = document.createElement('div');
-
-        // Color code by prefix
         if (line.startsWith('[error]')) {
             span.className = 'text-red-400';
         } else if (line.startsWith('[warn]')) {
@@ -164,7 +328,6 @@
             phaseLabel.classList.remove('text-blue-400');
             phaseLabel.classList.add('text-green-400');
             evtSource.close();
-            // Reload page after short delay to show final state
             setTimeout(function() { window.location.reload(); }, 1500);
         } else if (data.phase === 'failed' || data.phase === 'not_found') {
             progressBar.classList.remove('bg-blue-500');

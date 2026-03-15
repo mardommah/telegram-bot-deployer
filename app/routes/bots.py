@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import zipfile
 from pathlib import Path
@@ -12,6 +13,17 @@ from app.models import Bot
 from app.config import fernet, UPLOAD_DIR
 from app.docker_manager import DockerManager
 from app.deploy_worker import start_deploy, get_job, DeployPhase
+
+
+async def _get_docker_status(container_id: str) -> str:
+    """Run sync Docker status check in a thread to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, DockerManager.get_status, container_id)
+
+
+async def _get_docker_logs(container_id: str) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, DockerManager.get_logs, container_id)
 
 router = APIRouter(prefix="/bots")
 templates = Jinja2Templates(directory="app/templates")
@@ -109,8 +121,8 @@ async def create_bot(
 
     bot = Bot(name=name, telegram_token=encrypted_token, filename=filename, status="created")
     db.add(bot)
+    await db.flush()  # generates bot.id
     await db.commit()
-    await db.refresh(bot)
 
     return RedirectResponse(f"/bots/{bot.id}", status_code=303)
 
@@ -177,7 +189,7 @@ async def bot_detail(request: Request, bot_id: int, db: AsyncSession = Depends(g
     # Sync status from Docker
     logs = ""
     if not deploying and bot.container_id:
-        docker_status = DockerManager.get_status(bot.container_id)
+        docker_status = await _get_docker_status(bot.container_id)
         if docker_status == "running":
             bot.status = "running"
         elif docker_status == "exited":
@@ -185,10 +197,29 @@ async def bot_detail(request: Request, bot_id: int, db: AsyncSession = Depends(g
         elif docker_status == "not_found":
             bot.status = "error"
         await db.commit()
-        logs = DockerManager.get_logs(bot.container_id)
+        logs = await _get_docker_logs(bot.container_id)
+
+    # Decrypt env vars for display
+    env_vars_text = ""
+    if bot.env_vars:
+        try:
+            env_vars_text = fernet.decrypt(bot.env_vars.encode()).decode()
+        except Exception:
+            env_vars_text = ""
+
+    # Flash messages
+    msg = request.query_params.get("msg", "")
 
     return templates.TemplateResponse(
-        "bot_detail.html", {"request": request, "bot": bot, "logs": logs, "deploying": deploying}
+        "bot_detail.html",
+        {
+            "request": request,
+            "bot": bot,
+            "logs": logs,
+            "deploying": deploying,
+            "env_vars_text": env_vars_text,
+            "msg": msg,
+        },
     )
 
 
@@ -208,10 +239,23 @@ async def deploy_bot(request: Request, bot_id: int, db: AsyncSession = Depends(g
         return RedirectResponse(f"/bots/{bot.id}", status_code=303)
 
     token = fernet.decrypt(bot.telegram_token.encode()).decode()
+
+    # Parse custom env vars
+    extra_env = {}
+    if bot.env_vars:
+        try:
+            env_text = fernet.decrypt(bot.env_vars.encode()).decode()
+            for line in env_text.strip().splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    extra_env[k.strip()] = v.strip()
+        except Exception:
+            pass
+
     bot.status = "deploying"
     await db.commit()
 
-    start_deploy(bot.id, bot.name, bot.filename, token)
+    start_deploy(bot.id, bot.name, bot.filename, token, extra_env)
 
     return RedirectResponse(f"/bots/{bot.id}", status_code=303)
 
@@ -287,6 +331,160 @@ async def delete_bot(request: Request, bot_id: int, db: AsyncSession = Depends(g
     return RedirectResponse("/", status_code=303)
 
 
+@router.post("/{bot_id}/update-token")
+async def update_token(
+    request: Request,
+    bot_id: int,
+    telegram_token: str = Form(...),
+    auto_redeploy: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        return RedirectResponse("/", status_code=303)
+
+    bot.telegram_token = fernet.encrypt(telegram_token.encode()).decode()
+    await db.commit()
+
+    if auto_redeploy == "on" and bot.container_id:
+        return await _trigger_redeploy(bot, db)
+
+    return RedirectResponse(f"/bots/{bot.id}?msg=token_updated", status_code=303)
+
+
+@router.post("/{bot_id}/update-env")
+async def update_env_vars(
+    request: Request,
+    bot_id: int,
+    env_vars: str = Form(""),
+    auto_redeploy: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        return RedirectResponse("/", status_code=303)
+
+    # Validate format: KEY=VALUE per line
+    cleaned = []
+    for line in env_vars.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            return RedirectResponse(f"/bots/{bot.id}?msg=invalid_env", status_code=303)
+        cleaned.append(line)
+
+    env_text = "\n".join(cleaned)
+    bot.env_vars = fernet.encrypt(env_text.encode()).decode() if env_text else ""
+    await db.commit()
+
+    if auto_redeploy == "on" and bot.container_id:
+        return await _trigger_redeploy(bot, db)
+
+    return RedirectResponse(f"/bots/{bot.id}?msg=env_updated", status_code=303)
+
+
+async def _trigger_redeploy(bot, db):
+    """Stop current container and start a fresh deploy."""
+    existing_job = get_job(bot.id)
+    if existing_job and existing_job.phase not in (DeployPhase.DONE, DeployPhase.FAILED):
+        return RedirectResponse(f"/bots/{bot.id}", status_code=303)
+
+    token = fernet.decrypt(bot.telegram_token.encode()).decode()
+
+    extra_env = {}
+    if bot.env_vars:
+        try:
+            env_text = fernet.decrypt(bot.env_vars.encode()).decode()
+            for line in env_text.strip().splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    extra_env[k.strip()] = v.strip()
+        except Exception:
+            pass
+
+    bot.status = "deploying"
+    await db.commit()
+
+    start_deploy(bot.id, bot.name, bot.filename, token, extra_env)
+    return RedirectResponse(f"/bots/{bot.id}", status_code=303)
+
+
+@router.post("/{bot_id}/update-code")
+async def update_code(
+    request: Request,
+    bot_id: int,
+    bot_file: UploadFile = File(...),
+    entrypoint: str = Form(""),
+    requirements_file: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    bot = await db.get(Bot, bot_id)
+    if not bot:
+        return RedirectResponse("/", status_code=303)
+
+    bot_dir = UPLOAD_DIR / bot.name
+
+    # Clean old files (keep directory)
+    if bot_dir.exists():
+        for item in bot_dir.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+    else:
+        bot_dir.mkdir(parents=True, exist_ok=True)
+
+    original_filename = bot_file.filename or "bot.py"
+    content = await bot_file.read()
+    is_zip = original_filename.lower().endswith(".zip")
+
+    if is_zip:
+        zip_path = bot_dir / original_filename
+        zip_path.write_bytes(content)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                for member in zf.namelist():
+                    if member.startswith("/") or ".." in member:
+                        return RedirectResponse(
+                            f"/bots/{bot.id}?msg=unsafe_zip", status_code=303
+                        )
+                zf.extractall(bot_dir)
+        except zipfile.BadZipFile:
+            return RedirectResponse(f"/bots/{bot.id}?msg=bad_zip", status_code=303)
+        zip_path.unlink()
+
+        filename = _resolve_entrypoint(bot_dir, entrypoint)
+        if not filename:
+            return RedirectResponse(f"/bots/{bot.id}?msg=no_entrypoint", status_code=303)
+    else:
+        filename = original_filename
+        (bot_dir / filename).write_bytes(content)
+
+    # Save requirements.txt if provided
+    if requirements_file and requirements_file.filename:
+        req_content = await requirements_file.read()
+        if req_content.strip():
+            (bot_dir / "requirements.txt").write_bytes(req_content)
+
+    bot.filename = filename
+    await db.commit()
+
+    return RedirectResponse(f"/bots/{bot.id}?msg=code_updated", status_code=303)
+
+
 @router.get("/{bot_id}/status", response_class=HTMLResponse)
 async def bot_status_partial(request: Request, bot_id: int, db: AsyncSession = Depends(get_db)):
     """HTMX partial: returns just the status badge for polling."""
@@ -310,7 +508,7 @@ async def bot_status_partial(request: Request, bot_id: int, db: AsyncSession = D
         bot.status = "error"
         await db.commit()
     elif bot.container_id:
-        docker_status = DockerManager.get_status(bot.container_id)
+        docker_status = await _get_docker_status(bot.container_id)
         if docker_status == "running":
             bot.status = "running"
         elif docker_status == "exited":

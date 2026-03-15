@@ -42,14 +42,20 @@ def get_job(bot_id: int) -> DeployJob | None:
         return _jobs.get(bot_id)
 
 
-def start_deploy(bot_id: int, bot_name: str, filename: str, telegram_token: str) -> DeployJob:
+def start_deploy(
+    bot_id: int,
+    bot_name: str,
+    filename: str,
+    telegram_token: str,
+    extra_env: dict = None,
+) -> DeployJob:
     job = DeployJob(bot_id=bot_id)
     with _jobs_lock:
         _jobs[bot_id] = job
 
     t = threading.Thread(
         target=_run_deploy,
-        args=(job, bot_name, filename, telegram_token),
+        args=(job, bot_name, filename, telegram_token, extra_env or {}),
         daemon=True,
     )
     t.start()
@@ -83,7 +89,7 @@ def _update_bot_in_db(bot_id: int, status: str, container_id: str = None):
         print(f"[deploy_worker] DB update failed for bot {bot_id}: {e}")
 
 
-def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: str):
+def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: str, extra_env: dict = None):
     try:
         import docker
         from docker.errors import NotFound
@@ -162,10 +168,15 @@ def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: st
         job.append_log(f"[start] Creating container '{container_name}'...")
         job.progress = 90
 
+        env = {"TELEGRAM_BOT_TOKEN": telegram_token}
+        if extra_env:
+            env.update(extra_env)
+            job.append_log(f"[start] Injecting {len(extra_env)} custom env var(s)")
+
         container = client.containers.run(
             image_name,
             name=container_name,
-            environment={"TELEGRAM_BOT_TOKEN": telegram_token},
+            environment=env,
             detach=True,
             restart_policy={"Name": "unless-stopped"},
         )
