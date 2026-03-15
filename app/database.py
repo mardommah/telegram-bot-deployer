@@ -11,7 +11,12 @@ class Base(DeclarativeBase):
 
 
 async def init_db():
+    from app.migrations import run_migrations
+
     async with engine.begin() as conn:
+        # Migrate existing tables (add missing columns)
+        await conn.run_sync(run_migrations)
+        # Create any new tables
         await conn.run_sync(Base.metadata.create_all)
 
 
