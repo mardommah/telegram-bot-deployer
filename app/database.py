@@ -12,6 +12,7 @@ class Base(DeclarativeBase):
 
 async def init_db():
     from app.migrations import run_migrations
+    import app.models  # noqa: F401 — ensure models are registered in metadata
 
     async with engine.begin() as conn:
         # Migrate existing tables (add missing columns)
