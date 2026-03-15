@@ -1,0 +1,25 @@
+services:
+  deployer:
+    build: .
+    container_name: tgbot-deployer
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # REQUIRED: Docker socket — allows deployer to manage bot containers on the host
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist uploads and database across restarts
+      - deployer-uploads:/app/uploads
+      - deployer-data:/app/data
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/deployer.db
+      - UPLOAD_DIR=/app/uploads
+    env_file:
+      - .env
+    # Run as root to access Docker socket (required for DinD)
+    user: root
+
+volumes:
+  deployer-uploads:
+  deployer-data:

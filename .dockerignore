@@ -3,6 +3,9 @@ __pycache__/
 .env
 *.db
 uploads/
+data/
 .venv/
 venv/
 .git/
+docker-compose.yml
+README.md

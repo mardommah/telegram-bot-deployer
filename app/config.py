@@ -12,6 +12,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-to-a-random-secret-key")
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'deployer.db'}")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads")))
+DOCKER_HOST = os.getenv("DOCKER_HOST", "")
 
 _fernet_key = os.getenv("FERNET_KEY")
 if not _fernet_key:

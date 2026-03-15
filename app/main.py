@@ -8,6 +8,16 @@ from app.routes import auth, dashboard, bots, logs, generator
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+
+    # Check Docker connection
+    from app.docker_manager import check_docker_connection
+    ok, msg = check_docker_connection()
+    if ok:
+        print(f"[startup] Docker connected: {msg}")
+    else:
+        print(f"[startup] WARNING: Docker not available: {msg}")
+        print("[startup] Bot deployment will fail. Mount /var/run/docker.sock if running in Docker.")
+
     yield
 
 

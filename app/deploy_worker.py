@@ -91,12 +91,11 @@ def _update_bot_in_db(bot_id: int, status: str, container_id: str = None):
 
 def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: str, extra_env: dict = None):
     try:
-        import docker
         from docker.errors import NotFound
-        from app.docker_manager import DockerManager, DOCKERFILE_TEMPLATE
+        from app.docker_manager import DockerManager, DOCKERFILE_TEMPLATE, _get_client
         from app.config import UPLOAD_DIR
 
-        client = docker.from_env(timeout=60)
+        client = _get_client()
 
         bot_dir = UPLOAD_DIR / bot_name
         image_name = DockerManager._bot_image_name(bot_name)

@@ -174,7 +174,9 @@ sudo certbot --nginx -d deploy.example.com
 
 ### Option 2: Docker Compose (Recommended)
 
-The simplest approach — the deployer itself runs in Docker and manages bot containers via the Docker socket.
+The deployer runs in Docker and manages bot containers on the host via the Docker socket.
+
+**Important:** The Docker socket (`/var/run/docker.sock`) must be mounted into the container. Without it, the deployer cannot build images or run bot containers.
 
 #### 1. Install Docker
 
@@ -192,36 +194,25 @@ cp .env.example .env
 nano .env  # fill in credentials
 ```
 
-#### 3. Create `docker-compose.yml`
+#### 3. Build & Run
 
-```bash
-cat > docker-compose.yml << 'EOF'
-services:
-  deployer:
-    build: .
-    container_name: tgbot-deployer
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./uploads:/app/uploads
-      - ./deployer.db:/app/deployer.db
-    env_file:
-      - .env
-EOF
-```
-
-#### 4. Build & Run
+A `docker-compose.yml` is included in the repo:
 
 ```bash
 docker compose up -d --build
 
-# Check logs
+# Check logs — verify "Docker connected" appears at startup
 docker compose logs -f
 ```
 
-#### 5. (Optional) Add Nginx + SSL
+You should see:
+```
+[startup] Docker connected: Docker 24.x.x — Ubuntu 22.04
+```
+
+If you see `WARNING: Docker not available`, the socket is not mounted correctly.
+
+#### 4. (Optional) Add Nginx + SSL
 
 Same as Option 1 step 5, or use Caddy for a simpler setup:
 
@@ -240,6 +231,29 @@ sudo systemctl reload caddy
 ```
 
 Caddy automatically handles SSL via Let's Encrypt.
+
+---
+
+### Option 3: Dokploy / Platform Deployment
+
+If deploying via Dokploy, Coolify, or similar Docker-based platforms:
+
+1. **Add volume mount** in the service configuration:
+   ```
+   /var/run/docker.sock:/var/run/docker.sock
+   ```
+2. **Set environment variables** (or use `.env` file):
+   ```
+   DOCKER_HOST=unix:///var/run/docker.sock
+   DATABASE_URL=sqlite+aiosqlite:////app/data/deployer.db
+   UPLOAD_DIR=/app/uploads
+   ADMIN_USERNAME=admin
+   ADMIN_PASSWORD=<strong-password>
+   SECRET_KEY=<random-string>
+   FERNET_KEY=<generate-with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+   ```
+3. **Add persistent volumes** for `/app/uploads` and `/app/data`
+4. The app will show "Docker connected" in logs on startup if the socket is mounted correctly
 
 ---
 

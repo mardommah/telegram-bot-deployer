@@ -2,7 +2,7 @@ import re
 import docker
 from docker.errors import NotFound, APIError
 
-from app.config import UPLOAD_DIR
+from app.config import UPLOAD_DIR, DOCKER_HOST
 
 _SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_/][a-zA-Z0-9_./-]*\.py$")
 
@@ -15,8 +15,21 @@ CMD ["python", "-u", "{entrypoint}"]
 
 
 def _get_client():
-    """Lazy Docker client — only connects when actually needed."""
+    """Lazy Docker client — connects via socket or custom DOCKER_HOST."""
+    if DOCKER_HOST:
+        return docker.DockerClient(base_url=DOCKER_HOST, timeout=30)
     return docker.from_env(timeout=30)
+
+
+def check_docker_connection() -> tuple[bool, str]:
+    """Check if Docker daemon is reachable. Returns (ok, message)."""
+    try:
+        client = _get_client()
+        client.ping()
+        info = client.info()
+        return True, f"Docker {info.get('ServerVersion', '?')} — {info.get('OperatingSystem', '?')}"
+    except Exception as e:
+        return False, str(e)
 
 
 class DockerManager:
