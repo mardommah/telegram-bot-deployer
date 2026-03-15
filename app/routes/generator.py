@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models import Bot
 from app.config import fernet, UPLOAD_DIR
 from app.bot_templates import TEMPLATES, get_template
+from app.routes.bots import _validate_bot_name
 
 STARTER_CODE = '''\
 import os
@@ -102,6 +103,13 @@ async def generate_bot(
             {"request": request, "tmpl": tmpl, "error": "Bot name and token are required", "user": user},
         )
 
+    name_err = _validate_bot_name(bot_name)
+    if name_err:
+        return templates.TemplateResponse(
+            "generator_config.html",
+            {"request": request, "tmpl": tmpl, "error": name_err, "user": user},
+        )
+
     # Check unique name
     existing = await db.execute(select(Bot).where(Bot.name == bot_name))
     if existing.scalar_one_or_none():
@@ -187,6 +195,13 @@ async def manual_create(request: Request, db: AsyncSession = Depends(get_db)):
                 "error": "Bot name, token, and code are required",
                 "starter_code": bot_code or STARTER_CODE,
             },
+        )
+
+    name_err = _validate_bot_name(bot_name)
+    if name_err:
+        return templates.TemplateResponse(
+            "generator_manual.html",
+            {"request": request, "user": user, "error": name_err, "starter_code": bot_code},
         )
 
     # Check unique name

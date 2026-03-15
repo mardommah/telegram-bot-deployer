@@ -1,3 +1,4 @@
+import time
 from fastapi import Request, HTTPException
 from fastapi.responses import RedirectResponse
 from itsdangerous import URLSafeTimedSerializer
@@ -9,7 +10,8 @@ MAX_AGE = 86400  # 24 hours
 
 
 def create_session_token(username: str) -> str:
-    return serializer.dumps({"user": username})
+    # Include timestamp to prevent session fixation
+    return serializer.dumps({"user": username, "iat": int(time.time())})
 
 
 def get_current_user(request: Request) -> str | None:  # noqa

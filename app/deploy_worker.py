@@ -105,6 +105,12 @@ def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: st
         # Phase 1: Prepare Dockerfile
         job.phase = DeployPhase.PREPARING
         job.progress = 5
+
+        # Validate entrypoint filename
+        import re
+        if not re.match(r"^[a-zA-Z0-9_/][a-zA-Z0-9_./-]*\.py$", filename):
+            raise ValueError(f"Invalid entrypoint filename: {filename}")
+
         job.append_log(f"[prepare] Generating Dockerfile for '{bot_name}'...")
 
         req_file = bot_dir / "requirements.txt"
@@ -202,8 +208,15 @@ def _run_deploy(job: DeployJob, bot_name: str, filename: str, telegram_token: st
 
     except Exception as e:
         job.phase = DeployPhase.FAILED
-        job.error = str(e)
-        job.append_log(f"[error] Deploy failed: {e}")
+        # Sanitize error: strip any token-like values from the message
+        err_msg = str(e)
+        if telegram_token and telegram_token in err_msg:
+            err_msg = err_msg.replace(telegram_token, "[REDACTED]")
+        for val in (extra_env or {}).values():
+            if val and val in err_msg:
+                err_msg = err_msg.replace(val, "[REDACTED]")
+        job.error = err_msg
+        job.append_log(f"[error] Deploy failed: {err_msg}")
 
         # Persist failure to DB
         _update_bot_in_db(job.bot_id, "error")

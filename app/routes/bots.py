@@ -29,11 +29,51 @@ router = APIRouter(prefix="/bots")
 templates = Jinja2Templates(directory="app/templates")
 
 
-def _require_login(request: Request):
-    user = get_current_user(request)
-    if not user:
-        raise Exception("Not authenticated")
-    return user
+import re
+import os
+
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,98}[a-zA-Z0-9]$")
+
+
+def _validate_bot_name(name: str) -> str | None:
+    """Return error message if name is invalid, None if OK."""
+    if not name or len(name) < 2 or len(name) > 100:
+        return "Bot name must be 2-100 characters"
+    if not _SAFE_NAME_RE.match(name):
+        return "Bot name can only contain letters, numbers, hyphens, and underscores"
+    return None
+
+
+def _safe_zip_extract(zf: zipfile.ZipFile, dest: Path) -> str | None:
+    """Extract zip safely. Returns error message or None on success."""
+    for member in zf.infolist():
+        # Reject symlinks
+        if member.is_dir():
+            continue
+        # Normalize and check path traversal
+        target = (dest / member.filename).resolve()
+        if not str(target).startswith(str(dest.resolve())):
+            return "Zip contains path traversal"
+        # Reject symlinks (external_attr check)
+        if (member.external_attr >> 16) & 0o120000 == 0o120000:
+            return "Zip contains symbolic links"
+    # Check total uncompressed size (max 500MB)
+    total_size = sum(m.file_size for m in zf.infolist())
+    if total_size > 500 * 1024 * 1024:
+        return "Zip contents exceed 500MB limit"
+    # Check file count (max 1000)
+    if len(zf.infolist()) > 1000:
+        return "Zip contains too many files (max 1000)"
+    zf.extractall(dest)
+    return None
+
+
+def _validate_entrypoint(bot_dir: Path, ep: str) -> bool:
+    """Validate entrypoint path is safe and within bot_dir."""
+    if not ep or not ep.endswith(".py"):
+        return False
+    target = (bot_dir / ep).resolve()
+    return str(target).startswith(str(bot_dir.resolve())) and target.is_file()
 
 
 @router.get("/create", response_class=HTMLResponse)
@@ -58,6 +98,13 @@ async def create_bot(
     if not user:
         return RedirectResponse("/login", status_code=303)
 
+    # Validate bot name
+    name_err = _validate_bot_name(name)
+    if name_err:
+        return templates.TemplateResponse(
+            "bot_create.html", {"request": request, "error": name_err}
+        )
+
     # Check unique name
     existing = await db.execute(select(Bot).where(Bot.name == name))
     if existing.scalar_one_or_none():
@@ -73,20 +120,17 @@ async def create_bot(
     is_zip = original_filename.lower().endswith(".zip")
 
     if is_zip:
-        # Save and extract zip
         zip_path = bot_dir / original_filename
         zip_path.write_bytes(content)
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                # Security: reject paths with .. or absolute paths
-                for member in zf.namelist():
-                    if member.startswith("/") or ".." in member:
-                        shutil.rmtree(bot_dir)
-                        return templates.TemplateResponse(
-                            "bot_create.html",
-                            {"request": request, "error": "Zip contains unsafe paths"},
-                        )
-                zf.extractall(bot_dir)
+                extract_err = _safe_zip_extract(zf, bot_dir)
+                if extract_err:
+                    shutil.rmtree(bot_dir)
+                    return templates.TemplateResponse(
+                        "bot_create.html",
+                        {"request": request, "error": extract_err},
+                    )
         except zipfile.BadZipFile:
             shutil.rmtree(bot_dir)
             return templates.TemplateResponse(
@@ -96,13 +140,13 @@ async def create_bot(
 
         # Detect entrypoint
         filename = _resolve_entrypoint(bot_dir, entrypoint)
-        if not filename:
+        if not filename or not _validate_entrypoint(bot_dir, filename):
             shutil.rmtree(bot_dir)
             return templates.TemplateResponse(
                 "bot_create.html",
                 {
                     "request": request,
-                    "error": "Could not detect entrypoint. Specify it manually (e.g. main.py or src/bot.py)",
+                    "error": "Could not detect entrypoint. Specify a .py file (e.g. main.py or src/bot.py)",
                 },
             )
     else:
@@ -132,7 +176,7 @@ def _resolve_entrypoint(bot_dir: Path, user_entrypoint: str) -> str | None:
     # User specified entrypoint
     if user_entrypoint.strip():
         ep = user_entrypoint.strip()
-        if (bot_dir / ep).is_file():
+        if _validate_entrypoint(bot_dir, ep):
             return ep
         return None
 
@@ -456,18 +500,17 @@ async def update_code(
         zip_path.write_bytes(content)
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                for member in zf.namelist():
-                    if member.startswith("/") or ".." in member:
-                        return RedirectResponse(
-                            f"/bots/{bot.id}?msg=unsafe_zip", status_code=303
-                        )
-                zf.extractall(bot_dir)
+                extract_err = _safe_zip_extract(zf, bot_dir)
+                if extract_err:
+                    return RedirectResponse(
+                        f"/bots/{bot.id}?msg=unsafe_zip", status_code=303
+                    )
         except zipfile.BadZipFile:
             return RedirectResponse(f"/bots/{bot.id}?msg=bad_zip", status_code=303)
         zip_path.unlink()
 
         filename = _resolve_entrypoint(bot_dir, entrypoint)
-        if not filename:
+        if not filename or not _validate_entrypoint(bot_dir, filename):
             return RedirectResponse(f"/bots/{bot.id}?msg=no_entrypoint", status_code=303)
     else:
         filename = original_filename

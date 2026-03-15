@@ -1,7 +1,10 @@
+import re
 import docker
 from docker.errors import NotFound, APIError
 
 from app.config import UPLOAD_DIR
+
+_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_/][a-zA-Z0-9_./-]*\.py$")
 
 DOCKERFILE_TEMPLATE = """FROM python:3.11-slim
 WORKDIR /bot
@@ -27,6 +30,9 @@ class DockerManager:
 
     @staticmethod
     def deploy_bot(bot_name: str, filename: str, telegram_token: str) -> str:
+        if not _SAFE_FILENAME_RE.match(filename):
+            raise ValueError(f"Unsafe entrypoint filename: {filename}")
+
         client = _get_client()
         bot_dir = UPLOAD_DIR / bot_name
 

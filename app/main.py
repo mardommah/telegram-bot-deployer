@@ -13,6 +13,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Telegram Bot Deployer", lifespan=lifespan)
 
+from app.middleware import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(auth.router)
