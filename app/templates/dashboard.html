@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - TG Bot Deployer{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Your Bots</h1>
+    <div class="flex gap-2">
+        <a href="/generator" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded font-medium transition">
+            Bot Generator
+        </a>
+        <a href="/bots/create" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-medium transition">
+            + Upload Bot
+        </a>
+    </div>
+</div>
+
+{% if bots %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for bot in bots %}
+    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700 hover:border-gray-600 transition">
+        <div class="flex items-center justify-between mb-3">
+            <a href="/bots/{{ bot.id }}" class="text-lg font-semibold text-blue-400 hover:text-blue-300">
+                {{ bot.name }}
+            </a>
+            <div hx-get="/bots/{{ bot.id }}/status" hx-trigger="every 5s" hx-swap="innerHTML">
+                {% include "partials/bot_status.html" %}
+            </div>
+        </div>
+        <div class="text-sm text-gray-400">
+            <p>File: {{ bot.filename }}</p>
+            <p>Created: {{ bot.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+        </div>
+        <div class="mt-3">
+            <a href="/bots/{{ bot.id }}" class="text-sm text-gray-400 hover:text-white transition">
+                View Details &rarr;
+            </a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-20 text-gray-500">
+    <p class="text-lg mb-2">No bots yet</p>
+    <p class="mb-4">Use <strong>Bot Generator</strong> to create from a template, or <strong>Upload Bot</strong> to deploy your own code.</p>
+    <a href="/generator" class="inline-block bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded font-medium transition">
+        Get Started with Templates
+    </a>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Bot Generator - TG Bot Deployer{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <a href="/" class="text-gray-400 hover:text-white text-sm">&larr; Back to Dashboard</a>
+</div>
+
+<div class="mb-8">
+    <h1 class="text-2xl font-bold mb-2">Bot Generator</h1>
+    <p class="text-gray-400">Choose a template to create a bot without writing code. Configure it, deploy, and you're done.</p>
+</div>
+
+{% for category, tmpls in categories.items() %}
+<div class="mb-8">
+    <h2 class="text-lg font-semibold text-gray-300 mb-4 border-b border-gray-700 pb-2">{{ category }}</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% for t in tmpls %}
+        <a href="/generator/{{ t.id }}"
+            class="bg-gray-800 rounded-lg p-5 border border-gray-700 hover:border-blue-500 transition group block">
+            <div class="flex items-center gap-3 mb-3">
+                <div class="w-10 h-10 rounded-lg bg-blue-600/20 border border-blue-600/40 flex items-center justify-center text-blue-400 font-bold text-lg">
+                    {{ t.icon }}
+                </div>
+                <h3 class="text-lg font-semibold text-white group-hover:text-blue-400 transition">{{ t.name }}</h3>
+            </div>
+            <p class="text-sm text-gray-400 leading-relaxed">{{ t.description }}</p>
+            <div class="mt-3 text-xs text-gray-500">
+                {{ t.fields | length }} configurable field{{ 's' if t.fields | length != 1 }}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

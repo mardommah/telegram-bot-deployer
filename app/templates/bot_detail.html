@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block title %}{{ bot.name }} - TG Bot Deployer{% endblock %}
+{% block content %}
+<div class="mb-4">
+    <a href="/" class="text-gray-400 hover:text-white text-sm">&larr; Back to Dashboard</a>
+</div>
+
+<div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <h1 class="text-2xl font-bold">{{ bot.name }}</h1>
+        <div hx-get="/bots/{{ bot.id }}/status" hx-trigger="every 5s" hx-swap="innerHTML">
+            {% include "partials/bot_status.html" %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4 text-sm mb-6">
+        <div>
+            <span class="text-gray-400">Entrypoint:</span>
+            <span>{{ bot.filename }}</span>
+        </div>
+        <div>
+            <span class="text-gray-400">Container ID:</span>
+            <span class="font-mono" id="container-id">{{ (bot.container_id or 'N/A')[:12] }}</span>
+        </div>
+        <div>
+            <span class="text-gray-400">Created:</span>
+            <span>{{ bot.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+        </div>
+        <div>
+            <span class="text-gray-400">Updated:</span>
+            <span>{{ bot.updated_at.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex flex-wrap gap-2" id="bot-controls">
+        {% if bot.status == 'created' or bot.status == 'error' %}
+        <form method="post" action="/bots/{{ bot.id }}/deploy">
+            <button class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Deploy
+            </button>
+        </form>
+        {% endif %}
+
+        {% if bot.status == 'deploying' %}
+        <button disabled class="bg-gray-600 text-gray-400 px-4 py-2 rounded text-sm font-medium cursor-not-allowed">
+            Deploying...
+        </button>
+        {% endif %}
+
+        {% if bot.status == 'running' %}
+        <form method="post" action="/bots/{{ bot.id }}/stop">
+            <button class="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Stop
+            </button>
+        </form>
+        <form method="post" action="/bots/{{ bot.id }}/restart">
+            <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Restart
+            </button>
+        </form>
+        {% endif %}
+
+        {% if bot.status == 'stopped' %}
+        <form method="post" action="/bots/{{ bot.id }}/start">
+            <button class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Start
+            </button>
+        </form>
+        <form method="post" action="/bots/{{ bot.id }}/deploy">
+            <button class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Redeploy
+            </button>
+        </form>
+        {% endif %}
+
+        {% if bot.status != 'deploying' %}
+        <form method="post" action="/bots/{{ bot.id }}/delete" onsubmit="return confirm('Delete this bot? Container will be removed.')">
+            <button class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm font-medium transition">
+                Delete
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Deploy Progress -->
+<div id="deploy-section" class="{% if not deploying %}hidden{% endif %} mb-6">
+    <div class="bg-gray-800 rounded-lg border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="font-semibold">Deploy Progress</h2>
+                <span id="deploy-phase" class="text-xs text-blue-400 font-mono uppercase">preparing</span>
+            </div>
+            <!-- Progress bar -->
+            <div class="w-full bg-gray-700 rounded-full h-2">
+                <div id="deploy-progress-bar" class="h-2 rounded-full transition-all duration-300 bg-blue-500" style="width: 0%"></div>
+            </div>
+            <div class="flex justify-between mt-1">
+                <span id="deploy-progress-text" class="text-xs text-gray-500">0%</span>
+                <span id="deploy-steps" class="text-xs text-gray-500">Prepare &rarr; Build &rarr; Start</span>
+            </div>
+        </div>
+        <div id="deploy-output" class="p-4 font-mono text-xs text-cyan-400 bg-gray-950 rounded-b-lg max-h-[400px] overflow-y-auto whitespace-pre-wrap"></div>
+    </div>
+</div>
+
+<!-- Logs -->
+<div class="bg-gray-800 rounded-lg border border-gray-700">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+        <h2 class="font-semibold">Logs</h2>
+        {% if bot.container_id %}
+        <button onclick="toggleLiveLog()" id="live-btn"
+            class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded transition">
+            Live Stream
+        </button>
+        {% endif %}
+    </div>
+    <div id="log-output" class="p-4 font-mono text-xs text-green-400 bg-gray-950 rounded-b-lg max-h-[500px] overflow-y-auto whitespace-pre-wrap">{{ logs or 'No logs available.' }}</div>
+</div>
+
+<script>
+// Deploy progress streaming
+{% if deploying %}
+(function() {
+    const output = document.getElementById('deploy-output');
+    const progressBar = document.getElementById('deploy-progress-bar');
+    const progressText = document.getElementById('deploy-progress-text');
+    const phaseLabel = document.getElementById('deploy-phase');
+    const section = document.getElementById('deploy-section');
+
+    const evtSource = new EventSource('/bots/{{ bot.id }}/deploy/stream');
+
+    evtSource.addEventListener('log', function(e) {
+        const line = e.data;
+        const span = document.createElement('div');
+
+        // Color code by prefix
+        if (line.startsWith('[error]')) {
+            span.className = 'text-red-400';
+        } else if (line.startsWith('[warn]')) {
+            span.className = 'text-yellow-400';
+        } else if (line.startsWith('[done]')) {
+            span.className = 'text-green-400 font-semibold';
+        } else if (line.startsWith('[build]')) {
+            span.className = 'text-gray-400';
+        } else {
+            span.className = 'text-cyan-400';
+        }
+        span.textContent = line;
+        output.appendChild(span);
+        output.scrollTop = output.scrollHeight;
+    });
+
+    evtSource.addEventListener('status', function(e) {
+        const data = JSON.parse(e.data);
+        progressBar.style.width = data.progress + '%';
+        progressText.textContent = data.progress + '%';
+        phaseLabel.textContent = data.phase;
+
+        if (data.phase === 'done') {
+            progressBar.classList.remove('bg-blue-500');
+            progressBar.classList.add('bg-green-500');
+            phaseLabel.classList.remove('text-blue-400');
+            phaseLabel.classList.add('text-green-400');
+            evtSource.close();
+            // Reload page after short delay to show final state
+            setTimeout(function() { window.location.reload(); }, 1500);
+        } else if (data.phase === 'failed' || data.phase === 'not_found') {
+            progressBar.classList.remove('bg-blue-500');
+            progressBar.classList.add('bg-red-500');
+            phaseLabel.classList.remove('text-blue-400');
+            phaseLabel.classList.add('text-red-400');
+            evtSource.close();
+            setTimeout(function() { window.location.reload(); }, 2000);
+        }
+    });
+
+    evtSource.onerror = function() {
+        evtSource.close();
+    };
+})();
+{% endif %}
+
+// Container log streaming
+let evtSource = null;
+function toggleLiveLog() {
+    const btn = document.getElementById('live-btn');
+    const output = document.getElementById('log-output');
+    if (evtSource) {
+        evtSource.close();
+        evtSource = null;
+        btn.textContent = 'Live Stream';
+        btn.classList.remove('bg-green-700');
+        btn.classList.add('bg-gray-700');
+        return;
+    }
+    output.textContent = '';
+    evtSource = new EventSource('/bots/{{ bot.id }}/logs/stream');
+    evtSource.onmessage = function(e) {
+        output.textContent += e.data + '\n';
+        output.scrollTop = output.scrollHeight;
+    };
+    evtSource.onerror = function() {
+        evtSource.close();
+        evtSource = null;
+        btn.textContent = 'Live Stream';
+        btn.classList.remove('bg-green-700');
+        btn.classList.add('bg-gray-700');
+    };
+    btn.textContent = 'Stop Stream';
+    btn.classList.remove('bg-gray-700');
+    btn.classList.add('bg-green-700');
+}
+</script>
+{% endblock %}
